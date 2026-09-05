@@ -92,6 +92,13 @@ guessing what "PASS" means in this codebase.
   message MUST assert the message reaches the translator (key + lang)
   rather than appearing as a bare English literal — see
   `TestRunChallenges_FailedToLoadBanks_UsesTranslator`.
+- `internal/runtime/colibri_process_test.go` — T070 colibri launch seam
+  (W2a-2): compile-time Process/HealthProbe conformance, honest
+  no-binary refusal with lease release, real-subprocess
+  launch→stderr-readiness→teardown, terminal engine-death detection.
+- `cmd/helixllm/capability_profile_test.go` — F5 capability JSON seam
+  (W2a-2): the measured HostCapabilityProfile round-trips through the
+  printer as parseable JSON carrying every measured field.
 
 ### 3.2 Integration tests (no mocks per CONST-050(A))
 

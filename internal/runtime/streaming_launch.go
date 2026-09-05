@@ -23,18 +23,17 @@ import (
 // before its process is gone hands out capacity that is still in use; a lease
 // never released removes it from every other workload until the program exits.
 //
-// WHAT IS DELIBERATELY NOT HERE. Starting the actual streaming runtime — its
-// binary or container image, its flags, its port, its health URL — is not in
-// this file, and cannot be until the T070 operator checkpoint authorises
-// adopting that runtime as a dependency of the serving path. Nothing here
-// imports it, and the module's dependencies are unchanged.
-//
-// What is here instead is the seam it plugs into: Process and HealthProbe are
-// supplied by the deployment, so adopting the runtime later is wiring and
-// configuration rather than a change to this lifecycle. The concrete
-// implementation belongs in a boot command alongside the existing ones, and per
-// §11.4.76 a containerised streaming runtime is brought up through the
-// containers submodule (pkg/compose, pkg/health) rather than by hand.
+// WHAT SATISFIES THE SEAM. The T070 deferral is lifted: colibri_process.go
+// wires the adopted streaming runtime (Colibri) into this lifecycle —
+// ColibriProcess implements Process, ColibriHealth implements HealthProbe,
+// and NewColibriProcess is the config-presence gate the adoption was waiting
+// for (a deployment that has not named a launcher binary is refused honestly,
+// never faked). Nothing in this file imports the runtime, and the module's
+// dependencies are unchanged: adoption is a launch-and-lifecycle integration,
+// not a library one, exactly as colibri.go records. A containerised streaming
+// runtime is brought up per §11.4.76 through the containers submodule
+// (pkg/compose, pkg/health) rather than by hand — see deploy/compose.yaml's
+// colibri service.
 
 // Lease is a granted reservation against the host's admission budget, held for
 // as long as a process is using that capacity.
@@ -102,8 +101,9 @@ func (a brokerAdmitter) Budget() (total, used, free int64) { return a.b.Budget()
 
 // Process is the streaming runtime's process, as this package needs to see it.
 //
-// This is the T070 seam. The deployment supplies the implementation once the
-// dependency is adopted; the lifecycle above does not change when it is.
+// This is the T070 seam, now satisfied by colibri_process.go's ColibriProcess.
+// The interface stays: the lifecycle is tested against it without the runtime,
+// and the deployment can still substitute any other Process implementation.
 type Process interface {
 	// Start brings the process up. It returns once the process is running, not
 	// once it is ready — readiness is HealthProbe's question, because a

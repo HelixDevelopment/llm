@@ -39,6 +39,7 @@ func main() {
 	modeFlag := flag.String("mode", "", "Operating mode (overrides HELIX_MODE env)")
 	monitorFlag := flag.Bool("monitor", false, "Launch the TUI cluster status monitor instead of the server")
 	challengesFlag := flag.Bool("challenges", false, "Run challenge banks instead of starting server")
+	capabilityFlag := flag.Bool("capability", false, "Print the measured host capability profile as JSON and exit")
 	banksDirFlag := flag.String("banks-dir", "challenges/banks/", "Directory containing YAML challenge banks")
 	baseURLFlag := flag.String("base-url", "https://localhost:8443", "Base URL for challenge HTTP requests")
 	categoryFlag := flag.String("category", "", "Run only challenges matching this category")
@@ -54,6 +55,19 @@ func main() {
 
 	if *challengesFlag {
 		os.Exit(runChallenges(tr, lang, *baseURLFlag, *banksDirFlag, *categoryFlag, *priorityFlag, *caCertFlag))
+	}
+
+	// --capability: dump the measured host capability profile and exit. This
+	// runs before config.Load so it answers even on a host whose full
+	// configuration is not set up — measurement is the question being asked.
+	if *capabilityFlag {
+		if err := printCapabilityProfile(context.Background(), os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "%s\n", tr.T(lang, i18n.KeyHelixllmCLIGenericError, map[string]string{
+				"detail": err.Error(),
+			}))
+			os.Exit(1)
+		}
+		return
 	}
 
 	cfg, err := config.Load()

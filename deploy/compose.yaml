@@ -77,6 +77,48 @@ services:
       timeout: 5s
       retries: 3
 
+  # --- Disk-streaming runtime (Colibri, T070) ---
+  # Colibri serves a GLM-class model with its dense backbone resident in RAM
+  # and routed-expert weights streamed from disk — the runtime the streaming
+  # launch seam in internal/runtime/colibri_process.go drives. The launcher is
+  # `coli serve` (foreground; no daemonize flag), and readiness is the VERBATIM
+  # stderr line "OpenAI-compatible API listening on http://{host}:{port}/v1" —
+  # NOT /health, which the socket answers before the engine has finished
+  # loading. That is why this healthcheck greps the captured stderr log for the
+  # listening line instead of probing HTTP: an HTTP probe during load hangs on
+  # the listen backlog and would report the service healthy before it can
+  # serve. Queue saturation answers HTTP 429; callers MUST back off and retry
+  # rather than treat it as failure. Model name and port are env/config
+  # injection only (CONST-045) — no host paths are hardcoded here.
+  colibri:
+    image: ${HELIX_COLIBRI_IMAGE:-colibri:v1.10.1}
+    mem_limit: 12g
+    memswap_limit: 12g
+    pids_limit: 1024
+    oom_score_adj: 500
+    ports:
+      - "${HELIX_COLIBRI_PORT:-11434}:11434"
+    environment:
+      - HELIX_COLIBRI_MODEL=${HELIX_COLIBRI_MODEL:-model}
+    volumes:
+      - colibri_models:/models
+      - colibri_logs:/var/log/colibri
+    # Readiness per the R1 contract: the launcher's stderr carries the
+    # listening line, captured to a log the healthcheck greps. The exec form
+    # keeps `coli` as PID 1 so the signal reaches the launcher directly.
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "mkdir -p /var/log/colibri &&
+       exec coli serve --model /models/$${HELIX_COLIBRI_MODEL:-model}
+       --host 0.0.0.0 --port 11434 2>> /var/log/colibri/colibri.log"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q 'OpenAI-compatible API listening on http://' /var/log/colibri/colibri.log 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 600s
+
   # --- Vector Database ---
   qdrant:
     image: qdrant/qdrant:latest
@@ -205,6 +247,8 @@ services:
 
 volumes:
   models:
+  colibri_models:
+  colibri_logs:
   qdrant_data:
   postgres_data:
   redis_data:

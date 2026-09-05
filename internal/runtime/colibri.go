@@ -70,9 +70,11 @@ type ExecProcess struct {
 	// risks leaving that file's cache state behind.
 	StopGrace time.Duration
 
-	mu   sync.Mutex
-	cmd  *exec.Cmd
-	done chan error
+	mu      sync.Mutex
+	cmd     *exec.Cmd
+	done    chan error
+	waitErr error
+	waitSet bool
 }
 
 const defaultStopGrace = 30 * time.Second
@@ -126,12 +128,33 @@ func (p *ExecProcess) Start(ctx context.Context) error {
 	// Wait is called exactly once, here, in its own goroutine. Its result is
 	// kept so Stop can report how the process actually ended rather than
 	// assuming it ended well, and so the process is reaped instead of left a
-	// zombie if Stop is never reached.
+	// zombie if Stop is never reached. It is also recorded under the mutex
+	// (waitErr/waitSet) so WaitResult can report the same ending without
+	// draining the channel Stop reads.
 	p.cmd = cmd
 	p.done = make(chan error, 1)
-	go func(c *exec.Cmd, done chan<- error) { done <- c.Wait() }(cmd, p.done)
+	p.waitErr, p.waitSet = nil, false
+	go func(c *exec.Cmd, done chan<- error) {
+		err := c.Wait()
+		p.mu.Lock()
+		p.waitErr, p.waitSet = err, true
+		p.mu.Unlock()
+		done <- err
+	}(cmd, p.done)
 
 	return nil
+}
+
+// WaitResult reports how the process ended once Wait has returned, without
+// consuming the result Stop reads from the done channel. A caller that needs
+// the exit status independently of the teardown — a stderr watch reporting
+// engine death, say — uses this, because two readers on one channel would
+// race and the loser would hang. The second return is false until the process
+// has actually exited.
+func (p *ExecProcess) WaitResult() (error, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.waitErr, p.waitSet
 }
 
 // Stop ends the process: signal, wait out the grace period, then kill.
