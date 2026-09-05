@@ -116,7 +116,12 @@ func chooseModel(ctx context.Context) (choice, error) {
 		return choice{}, laneboot.ExitErr(laneboot.ExitNoOptionOffered, "CANNOT-CHOOSE: %v", err)
 	}
 
-	offered, loaded, profile, purpose, err := laneboot.Decide(ctx, family, "", pin, forbidKey)
+	dir, err := weightsDir(ctx)
+	if err != nil {
+		return choice{}, err
+	}
+
+	offered, loaded, profile, purpose, err := laneboot.Decide(ctx, family, dir, pin, forbidKey)
 	if err != nil {
 		return choice{}, err
 	}

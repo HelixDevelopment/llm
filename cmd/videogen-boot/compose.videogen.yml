@@ -17,7 +17,10 @@
 #     `videogen-boot` exits non-zero with the reason and this file is never
 #     `up`'d.
 #   OPERATOR — VIDEOGEN_CPU_OFFLOAD, _MAX_STEPS, _HOST_PORT, _MEM_LIMIT,
-#     _SHM_SIZE, HF_TOKEN say HOW and WHERE the service runs. None names a model.
+#     _SHM_SIZE, _WEIGHTS_DIR, HF_TOKEN say HOW and WHERE the service runs.
+#     None names a model. _WEIGHTS_DIR overrides where the decision measures
+#     the weights-storage axis (default: the helixllm-videogen-cache volume's
+#     mountpoint — see cmd/videogen-boot/modelchoice.go).
 #
 # The GPU reservation is admitted by the vrambroker (ClassVideo) for the CHOSEN
 # model's recorded requirement BEFORE this file is `up`'d (cmd/videogen-boot).

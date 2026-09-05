@@ -8,6 +8,11 @@
 # every value is injected from the environment by run_proof.sh; the ${VAR}
 # forms are always set by the harness before boot. The GPU reservation is
 # admitted by the vrambroker BEFORE this file is `up`'d (cmd/imagegen-boot).
+#
+# OPERATOR — IMAGEGEN_WEIGHTS_DIR names the host directory the decision
+# measures the weights-storage axis on (default: the helixllm-imagegen-cache
+# volume's mountpoint — see cmd/imagegen-boot/modelchoice.go). It says WHERE,
+# never WHICH.
 services:
   imagegen:
     build:

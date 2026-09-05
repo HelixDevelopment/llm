@@ -24,12 +24,14 @@ package main
 // here, so there is one place to read them and one place to change them.
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/HelixDevelopment/HelixLLM/internal/capability"
 	"github.com/HelixDevelopment/HelixLLM/internal/catalogue"
+	"github.com/HelixDevelopment/HelixLLM/internal/laneboot"
 	"github.com/HelixDevelopment/HelixLLM/internal/selection"
 )
 
@@ -38,6 +40,31 @@ import (
 // decision reaches (20-23) live in laneboot; this one stays here because only
 // this lane knows which precisions it serves.
 const exitNotServable = 24
+
+// weightsDirKey is the operator override naming the host directory that will
+// hold this lane's weights. It names WHERE, never WHICH.
+const weightsDirKey = "IMAGEGEN_WEIGHTS_DIR"
+
+// weightsVolume is the named compose volume this lane's weights actually land
+// in: compose.imagegen.yml mounts it at /models/hf with HF_HOME=/models/hf.
+// The storage axis of the decision must be measured on THIS filesystem —
+// the volume's mountpoint, or the runtime's storage root before the volume
+// exists — never on the process working directory (EX-28: an empty
+// WeightsDir there measured /dev/shm at 15325 MiB while the volume's
+// filesystem held 1120821 MiB on the video sibling — a 73x different fit
+// answer on one host).
+const weightsVolume = "helixllm-imagegen-cache"
+
+// weightsDir resolves the filesystem the decision's storage axis is measured
+// on. Every failure path refuses with the host-not-measured code: the
+// decision may not proceed on a number that describes the wrong filesystem.
+func weightsDir(ctx context.Context) (string, error) {
+	dir, err := laneboot.ResolveWeightsDir(ctx, weightsDirKey, weightsVolume)
+	if err != nil {
+		return "", laneboot.ExitErr(laneboot.ExitHostNotMeasured, "CANNOT-CHOOSE: %v", err)
+	}
+	return dir, nil
+}
 
 // choice is one decided model, with the measurement it was decided from and the
 // artefacts on this host that serve it.
