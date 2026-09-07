@@ -74,32 +74,27 @@ func HandleChatCompletions(b Completer, toolMgr *ToolManager, ragHook func(*type
 				req.Tools = toolMgr.CompressAndSelect(req.Tools)
 			}
 
-			// Truncate oversized messages to fit remaining context.
-			const maxMsgChars = 4000
-			for i, m := range req.Messages {
-				switch content := m.Content.(type) {
-				case string:
-					if len(content) > maxMsgChars {
-						headSize := maxMsgChars * 2 / 3
-						tailSize := maxMsgChars / 3
-						req.Messages[i].Content = content[:headSize] + "\n...[truncated]...\n" + content[len(content)-tailSize:]
-					}
-				case []interface{}:
-					// ContentPart array — extract text, truncate, replace with single string
-					var fullText string
-					for _, part := range content {
-						if pm, ok := part.(map[string]interface{}); ok {
-							if t, ok := pm["text"].(string); ok {
-								fullText += t
-							}
-						}
-					}
-					if len(fullText) > maxMsgChars {
-						headSize := maxMsgChars * 2 / 3
-						tailSize := maxMsgChars / 3
-						req.Messages[i].Content = fullText[:headSize] + "\n...[truncated]...\n" + fullText[len(fullText)-tailSize:]
-					}
-				}
+			// Context budget: refuse an oversized prompt, never shorten it.
+			//
+			// This replaces a fixed 4000-character-per-message cap that
+			// shortened the caller's prompt and answered at 200 anyway. See
+			// contextbudget.go for the measurements and the reasoning; the
+			// short version is that a confident answer about text the model
+			// never read is worse than an error, because only the error is
+			// visible to the caller.
+			limit := maxPromptTokens()
+			if est, over := promptBudgetExceeded(&req, limit); over {
+				c.JSON(http.StatusRequestEntityTooLarge, api.ErrorResponse{
+					Error: api.ErrorDetail{
+						Message: tr(c, i18n.KeyGatewayPromptTooLarge,
+							map[string]string{
+								"tokens": strconv.Itoa(est),
+								"limit":  strconv.Itoa(limit),
+							}),
+						Type: "invalid_request_error",
+					},
+				})
+				return
 			}
 
 			// Per full_plan/helixllm_tools/SYSTEM_DESIGN.md: REPLACE the
@@ -698,29 +693,21 @@ func HandleEmbeddings(_ *brain.Brain, embedder knowledge.Embedder) gin.HandlerFu
 
 // openAIToInternal converts an api.ChatCompletionRequest to types.InternalChatRequest.
 func openAIToInternal(req *api.ChatCompletionRequest) *types.InternalChatRequest {
-	// Context management: keep the conversation within the model's context
-	// window by using a sliding window over messages.
+	// Conversion preserves the conversation exactly as the caller sent it.
 	//
-	// Strategy:
-	//   1. Always keep: first message (system prompt) + last N messages
-	//   2. Drop old tool call/result pairs — they're stale context
-	//   3. Truncate individual messages that are too long
-	//   4. Total budget enforcement as a safety net
+	// This function used to enforce a context budget here: a 12-message
+	// sliding window that DROPPED older messages, a 2000/4000-character
+	// per-message cap, and a 14000-character total cap — all sized for a 16K
+	// context, all silent, and all still applied to a backend now serving
+	// 32768. Together with the handler-level cap they pinned the delivered
+	// prompt at ~4000 characters no matter how much the caller sent.
 	//
-	// This prevents the infinite tool loop problem where 55+ messages
-	// overflow the 16K context and the model produces garbage.
-	const maxMessages = 12       // keep system + last 11 messages
-	const maxPerMsgChars = 2000  // truncate individual messages
-	const maxLastMsgChars = 4000 // last user message gets more room
-	const maxTotalChars = 14000  // leave room for system prompt + tools
-
-	// Sliding window: keep first message (system) + last N messages
+	// Enforcement moved to the handler, BEFORE conversion, where an
+	// over-budget request is REFUSED with both numbers named rather than
+	// quietly shortened and answered (see contextbudget.go). Dropping
+	// messages is the same defect as truncating them — the caller cannot see
+	// that it happened — so the window is gone too, not merely widened.
 	input := req.Messages
-	if len(input) > maxMessages {
-		first := input[0]                        // system prompt
-		tail := input[len(input)-maxMessages+1:] // last N-1 messages
-		input = append([]api.ChatMessage{first}, tail...)
-	}
 
 	// Fix empty messages that cause 400 errors from llama.cpp.
 	// Empty tool results and empty assistant messages break the Qwen3
@@ -744,49 +731,20 @@ func openAIToInternal(req *api.ChatCompletionRequest) *types.InternalChatRequest
 		}
 	}
 
-	// Find last user message index for special handling
-	lastUserIdx := -1
-	for i, m := range input {
-		if m.Role == "user" {
-			lastUserIdx = i
-		}
-	}
+	// (The last-user-message index that used to be computed here existed only
+	// to give that message a larger truncation allowance. With truncation
+	// gone, every message is delivered whole and no message needs a special
+	// allowance.)
 
-	totalBudget := maxTotalChars
 	msgs := make([]types.InternalMessage, 0, len(input))
 
-	for i, m := range input {
+	for _, m := range input {
 		content := ""
 		switch v := m.Content.(type) {
 		case string:
 			content = v
 		}
 
-		// Truncate oversized messages
-		isLastUser := (i == lastUserIdx)
-		limit := maxPerMsgChars
-		if isLastUser {
-			limit = maxLastMsgChars
-		}
-		if len(content) > limit {
-			if isLastUser {
-				headSize := limit * 2 / 3
-				tailSize := limit / 3
-				content = content[:headSize] + "\n...\n" + content[len(content)-tailSize:]
-			} else {
-				content = content[:limit]
-			}
-		}
-
-		// Total budget
-		if totalBudget <= 0 {
-			content = ""
-		} else if len(content) > totalBudget {
-			content = content[:totalBudget]
-			totalBudget = 0
-		} else {
-			totalBudget -= len(content)
-		}
 		msg := types.InternalMessage{
 			Role:       types.Role(m.Role),
 			Content:    content,

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"log"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 
@@ -118,6 +119,26 @@ func WriteUpstreamError(c *gin.Context, stage string, err error) {
 func writeUpstreamError(c *gin.Context, stage string, err error) {
 	log.Printf("[HelixLLM] upstream %s failed for %s %s: %s",
 		stage, c.Request.Method, c.Request.URL.Path, UpstreamErrorLogDetail(err))
+
+	// A context-size refusal is the one upstream failure the caller can act
+	// on, and the only one whose detail is safe to relay: it names token
+	// counts, and a token count cannot disclose a host, a port or an upstream
+	// path. Collapsing it into the generic "the model provider failed"
+	// message would tell a caller whose prompt was simply too large that the
+	// backend is broken — and leave them no way to find out it was not.
+	//
+	// Only the extracted count-bearing clause travels; the surrounding error
+	// chain, which may carry an address, stays in the log above.
+	if detail := contextOverflowDetail(err); detail != "" {
+		c.JSON(http.StatusRequestEntityTooLarge, api.ErrorResponse{
+			Error: api.ErrorDetail{
+				Message: tr(c, i18n.KeyGatewayUpstreamContextExceeded,
+					map[string]string{"detail": detail}),
+				Type: "invalid_request_error",
+			},
+		})
+		return
+	}
 
 	c.JSON(completerErrorStatus(err), api.ErrorResponse{
 		Error: api.ErrorDetail{

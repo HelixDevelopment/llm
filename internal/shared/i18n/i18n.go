@@ -122,6 +122,22 @@ const (
 	// renamed, and will never publish again. Unlike the two above it names a
 	// remedy, because one exists and the caller cannot work it out alone.
 	KeyGatewayIdentifierRetired = "gateway_identifier_retired"
+
+	// A prompt larger than the context this deployment can serve. Both of
+	// these REFUSE — they exist so that an oversized prompt is never answered
+	// on a silently shortened version of itself, which is the worst outcome
+	// available: the caller receives a confident answer about text the model
+	// never read. They name BOTH numbers because the caller cannot act on
+	// "too large" alone — only on how large it was against what was allowed.
+	//
+	// The pair is split by WHO measured. PromptTooLarge is the gateway's own
+	// pre-flight estimate; UpstreamContextExceeded carries the backend's
+	// authoritative count, which is exact where the estimate is not. The
+	// backend's text is safe to relay because a context-size refusal names
+	// token counts only — no host, port or upstream path — so it does not
+	// reopen the disclosure that internal/gateway/upstream_error.go closed.
+	KeyGatewayPromptTooLarge          = "gateway_prompt_too_large"
+	KeyGatewayUpstreamContextExceeded = "gateway_upstream_context_exceeded"
 )
 
 // defaultEnglishMessages is pre-loaded into every new Translator.
@@ -214,6 +230,13 @@ var defaultEnglishMessages = map[string]string{
 		"the identifiers for locally served models changed when the serving host " +
 		"was renamed; re-fetch the current ones from /v1/models and update your " +
 		"configuration",
+
+	KeyGatewayPromptTooLarge: "this prompt is approximately {{tokens}} tokens, " +
+		"which exceeds the {{limit}}-token context available to serve it; the " +
+		"request was refused rather than answered on a truncated prompt — send " +
+		"less context or split the request",
+	KeyGatewayUpstreamContextExceeded: "the model provider refused this request " +
+		"because the prompt exceeds its context window: {{detail}}",
 }
 
 // TranslatorAPI is the minimal contract that call sites depend on so

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -16,6 +17,44 @@ import (
 	"github.com/HelixDevelopment/HelixLLM/pkg/api"
 	"github.com/HelixDevelopment/HelixLLM/pkg/types"
 )
+
+// backendErrorDetailLimit caps how much of a backend error body is carried in
+// the returned error. The body is diagnostic prose, not a payload; a bound
+// keeps a misbehaving or verbose backend from pushing an unbounded string
+// into the log and the error chain.
+const backendErrorDetailLimit = 512
+
+// readBackendError extracts the backend's own explanation of a non-200.
+//
+// The status code alone loses the only part a caller can act on. llama.cpp
+// answers an oversized prompt with HTTP 400 and a body that names BOTH
+// numbers — e.g.
+//
+//	request (141440 tokens) exceeds the available context size (4096 tokens)
+//
+// Discarding that body collapsed a precise, actionable refusal into a bare
+// "unexpected status 400", which the gateway could only render as the generic
+// "the model provider failed to complete this request". The caller was left
+// unable to distinguish a prompt that was simply too large from a broken
+// backend.
+//
+// The gateway decides what of this reaches a client: internal/gateway's
+// upstream-error funnel relays only the count-bearing clause of a
+// context-size refusal and redacts everything else, so widening the error
+// here does not widen client-facing disclosure.
+//
+// A body that cannot be read contributes nothing rather than failing the
+// request — the status code is still reported either way.
+func readBackendError(body io.Reader) string {
+	if body == nil {
+		return ""
+	}
+	b, err := io.ReadAll(io.LimitReader(body, backendErrorDetailLimit))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
 
 // LlamaCppProvider implements Provider by calling llama.cpp's OpenAI-compatible
 // API at the configured base URL.
@@ -223,7 +262,8 @@ func (p *LlamaCppProvider) Complete(ctx context.Context, req *types.InternalChat
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("llamacpp: unexpected status %d", httpResp.StatusCode)
+		return nil, fmt.Errorf("llamacpp: unexpected status %d: %s",
+			httpResp.StatusCode, readBackendError(httpResp.Body))
 	}
 
 	var apiResp api.ChatCompletionResponse
@@ -259,8 +299,10 @@ func (p *LlamaCppProvider) CompleteStream(ctx context.Context, req *types.Intern
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
+		detail := readBackendError(httpResp.Body)
 		httpResp.Body.Close()
-		return nil, fmt.Errorf("llamacpp: unexpected status %d", httpResp.StatusCode)
+		return nil, fmt.Errorf("llamacpp: unexpected status %d: %s",
+			httpResp.StatusCode, detail)
 	}
 
 	ch := make(chan types.StreamChunk, 64)
