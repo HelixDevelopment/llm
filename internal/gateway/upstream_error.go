@@ -3,9 +3,11 @@ package gateway
 import (
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/HelixDevelopment/HelixLLM/internal/brain"
 	"github.com/HelixDevelopment/HelixLLM/internal/fallback"
 	"github.com/HelixDevelopment/HelixLLM/internal/shared/i18n"
 	"github.com/HelixDevelopment/HelixLLM/pkg/api"
@@ -87,6 +89,16 @@ func upstreamErrorMessageKey(err error) string {
 // to write err.Error() verbatim with no translation at all, which made it
 // both the least localised and the most disclosing of the six error sites.
 func upstreamErrorTextForLang(lang string, err error) string {
+	// The unknown-model condition is the one case whose message needs an
+	// argument, so it is rendered here rather than through
+	// upstreamErrorMessageKey, which returns a key alone. Without this a
+	// WebSocket client naming a model this deployment does not serve would be
+	// told "the model provider failed" — an answer that is both untrue and
+	// unactionable, since the remedy is to change the model id.
+	if model, ok := brain.NotFoundModelName(err); ok {
+		return gatewayTranslator.T(lang, i18n.KeyGatewayModelNotFound,
+			map[string]string{"model": strconv.Quote(model)})
+	}
 	return gatewayTranslator.T(lang, upstreamErrorMessageKey(err), nil)
 }
 
@@ -117,6 +129,38 @@ func WriteUpstreamError(c *gin.Context, stage string, err error) {
 // distinction the old KeyGatewayBrainError / KeyGatewayBrainStreamError
 // message pair used to carry in the client's body.
 func writeUpstreamError(c *gin.Context, stage string, err error) {
+	// A model this deployment does not serve is a CLIENT fault, not an
+	// upstream failure: nothing upstream was even reached. It is answered
+	// before the log line below because "upstream complete failed" would be
+	// untrue, and before the generic body because that body's
+	// type="server_error" would tell the client its request was fine and the
+	// server broke — the opposite of what happened, and the reason a caller
+	// would keep retrying an id that can never resolve.
+	//
+	// The shape is the one requestvalidate.go established for a model-shaped
+	// fault (invalid_request_error + param + an OpenAI code) and the message
+	// is the key HandleGetModel already uses for an unknown model id, so a
+	// client sees the same answer whether it discovers the name is unknown by
+	// listing it or by sending it. The model name is the caller's own input
+	// echoed back, so relaying it keeps the redaction this file enforces.
+	// The STATUS still comes from completerErrorStatus, not a literal here.
+	// Writing 404 inline would put the status decision in two places and leave
+	// the one in completer_status.go asserted by nothing — a paired mutation
+	// that neutered it changed no test, which is how the duplicate was found.
+	if model, ok := brain.NotFoundModelName(err); ok {
+		param, code := "model", codeModelNotFound
+		c.JSON(completerErrorStatus(err), api.ErrorResponse{
+			Error: api.ErrorDetail{
+				Message: tr(c, i18n.KeyGatewayModelNotFound,
+					map[string]string{"model": strconv.Quote(model)}),
+				Type:  "invalid_request_error",
+				Param: &param,
+				Code:  &code,
+			},
+		})
+		return
+	}
+
 	log.Printf("[HelixLLM] upstream %s failed for %s %s: %s",
 		stage, c.Request.Method, c.Request.URL.Path, UpstreamErrorLogDetail(err))
 

@@ -19,9 +19,15 @@ type RoutingRule struct {
 //  1. req.Provider explicit override (if that provider is registered and available)
 //  2. Exact model match against registered providers' model lists (if available)
 //  3. Prefix-match rules built dynamically from provider models (if available)
-//  4. Fallback provider (if available)
-//  5. Any available provider
-//  6. Error
+//  4. Refuse a NAMED model no registered provider claims (ErrModelNotFound)
+//  5. Fallback provider (if available)
+//  6. Any available provider
+//  7. Error
+//
+// Steps 5 and 6 are the substitution the router exists to provide, and step 4
+// is the boundary that keeps them honest: they answer a caller who named NO
+// model, never one who named a model this deployment has never heard of. See
+// Route for why that distinction is the whole point.
 type Router struct {
 	providers map[string]Provider
 	rules     []RoutingRule
@@ -87,32 +93,75 @@ func (r *Router) Route(req *types.InternalChatRequest) (Provider, error) {
 		}
 	}
 
+	// claimed records that SOME registered provider offers this name, even if
+	// the provider that offers it turned out to be down. It is what separates
+	// the two reasons steps 2 and 3 can fail — see step 4.
+	claimed := false
+
 	// 2. Exact model match — check every provider's model list.
 	for _, p := range r.providers {
 		for _, m := range p.Models() {
-			if m == req.Model && p.Available() {
+			if m != req.Model {
+				continue
+			}
+			if p.Available() {
 				return p, nil
 			}
+			claimed = true
 		}
 	}
 
 	// 3. Prefix-match rules (built dynamically from provider models).
 	for _, rule := range r.rules {
-		if strings.HasPrefix(req.Model, rule.Prefix) {
-			if p, ok := r.providers[rule.Provider]; ok && p.Available() {
+		if !strings.HasPrefix(req.Model, rule.Prefix) {
+			continue
+		}
+		if p, ok := r.providers[rule.Provider]; ok {
+			if p.Available() {
 				return p, nil
 			}
+			claimed = true
 		}
 	}
 
-	// 4. Fallback provider.
+	// 4. A model this deployment does not serve is REFUSED, not substituted.
+	//
+	// Steps 5 and 6 below hand back a provider chosen without reference to
+	// req.Model. For a request that named no model that is the intended
+	// behaviour — the caller expressed no preference and any available
+	// backend answers it. For a request that named one, it is a silent
+	// misroute: the caller gets a confident completion from a model it never
+	// asked for, with a 200 and no way to detect the substitution. Measured
+	// on the shipped gateway, `definitely-not-a-real-model-zzz`, `gpt-4o` and
+	// `claude-opus-4` were all answered by the one local model, and the
+	// naming layer's own comment (see ResolveModelName) already called this
+	// out as "a silent misroute" without guarding it here.
+	//
+	// The condition is narrow on purpose. `claimed` is set when some provider
+	// LISTS the name and was skipped only for being unavailable, which is an
+	// availability condition the deployment reports elsewhere as retryable —
+	// refusing it here would change an unrelated answer under cover of this
+	// fix, and TestRouter_FallbackWhenPreferredUnavailable pins that
+	// behaviour. Availability is therefore never consulted to decide
+	// not-found; only the model lists are.
+	// A DELEGATION SENTINEL is exempt for the same reason the empty model is:
+	// it names no model to be missing. `auto` is the documented "you choose"
+	// value, so a registry miss on it carries no information and refusing it
+	// would 404 the project's own canonical first API call. The predicate is
+	// shared with fallback.Chain.refuseUnknownModel — see delegation_sentinel.go
+	// for why one definition rather than two.
+	if !IsDelegationSentinel(req.Model) && !claimed {
+		return nil, NewModelNotFound(req.Model)
+	}
+
+	// 5. Fallback provider.
 	if r.fallback != "" {
 		if p, ok := r.providers[r.fallback]; ok && p.Available() {
 			return p, nil
 		}
 	}
 
-	// 5. Any available provider.
+	// 6. Any available provider.
 	for _, p := range r.providers {
 		if p.Available() {
 			return p, nil

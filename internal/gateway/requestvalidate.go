@@ -152,6 +152,13 @@ const (
 	codeInvalidValue         = "invalid_value"
 	codeStringAboveMaxLen    = "string_above_max_length"
 	codeMissingRequiredParam = "missing_required_parameter"
+
+	// codeModelNotFound is OpenAI's code for "the model you named does not
+	// exist". It is not a validation defect — the name is well-formed, this
+	// deployment simply does not serve it — so it is raised at dispatch by
+	// upstream_error.go rather than by this file's checks. It lives here so
+	// the gateway's OpenAI error vocabulary stays in one place.
+	codeModelNotFound = "model_not_found"
 )
 
 // write renders the defect as an OpenAI-shaped 400.

@@ -448,8 +448,23 @@ func HandleCompletions(b Completer) gin.HandlerFunc {
 		}
 
 		if b != nil {
+			// req.Model, NOT the defaulted `model` above.
+			//
+			// `model` exists to LABEL a response on the no-Brain development
+			// path below, and substituting "llama-3.1-70b" into it was
+			// harmless only while an unresolvable id was silently answered by
+			// whatever backend was up. Now that a named-but-unserved model is
+			// refused (HXC-348), routing on that invented id would turn a
+			// caller who named NO model — a request this endpoint is
+			// documented to default — into a 404 for a name the caller never
+			// sent. Passing the caller's own value through keeps the empty
+			// model meaning "no preference" here exactly as it does on
+			// /v1/chat/completions, which hands `req` to openAIToInternal
+			// untouched. The brain-backed response below already labels
+			// itself from resp.Model, so nothing downstream needs the
+			// substitute.
 			internalReq := &types.InternalChatRequest{
-				Model: model,
+				Model: req.Model,
 				Messages: []types.InternalMessage{
 					{Role: types.RoleUser, Content: req.Prompt},
 				},

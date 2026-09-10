@@ -3,6 +3,7 @@ package gateway
 import (
 	"net/http"
 
+	"github.com/HelixDevelopment/HelixLLM/internal/brain"
 	"github.com/HelixDevelopment/HelixLLM/internal/fallback"
 )
 
@@ -18,8 +19,16 @@ import (
 // 500 as "this build is broken"; reporting a warming-up or unreachable
 // backend as 500 tells every one of them the wrong thing.
 //
-// A RETIRED identifier is checked first, and is the one case that is not an
-// availability condition at all: the request named an identifier this
+// A model name NO registered provider serves is checked first, and is not an
+// availability condition either: no amount of backoff makes `gpt-4o` appear on
+// a llama.cpp-only deployment. It gets 404 for the same reason the retired
+// identifier below does — it is a name that identifies nothing here, and 503
+// would tell a correct client to retry it forever. Before this check the
+// condition did not reach here at all: the router and the fallback chain both
+// substituted a different model and answered 200 (HXC-348).
+//
+// A RETIRED identifier is checked next, and is the other case that is not an
+// availability condition: the request named an identifier this
 // deployment published before its serving host was renamed and will never
 // publish again. 503 tells a client to retry with backoff, and a correct client
 // obeying that against a name that can never resolve retries forever. It gets
@@ -35,6 +44,9 @@ import (
 // availability condition. Collapsing the two is what this function exists to
 // prevent.
 func completerErrorStatus(err error) int {
+	if brain.IsModelNotFound(err) {
+		return http.StatusNotFound
+	}
 	if fallback.IsRetiredIdentifier(err) {
 		return http.StatusNotFound
 	}

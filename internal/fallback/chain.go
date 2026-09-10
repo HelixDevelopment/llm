@@ -174,6 +174,54 @@ func (c *Chain) pin(requested string) (provider, model string, ok bool) {
 	return p.PinModel(requested)
 }
 
+// refuseUnknownModel reports the error owed to a request whose model name the
+// pin could not resolve, or nil when the score-ordered chain may answer it.
+//
+// # What the pin's miss means
+//
+// Brain.PinModel documents three outcomes, and ok=false is "nothing
+// registered serves this name". Two very different requests arrive there: one
+// that named NO model, and one that named a model this deployment does not
+// serve. The chain used to treat both as "the caller named nothing" and hand
+// them to its own top-ranked entry — which for the first is the feature, and
+// for the second is a silent misroute. Measured on the shipped gateway,
+// `definitely-not-a-real-model-zzz`, `gpt-4o` and `claude-opus-4` each
+// returned HTTP 200 answered by the single local model, with nothing in the
+// response a client could use to detect the substitution.
+//
+// This is the same trade pinnedProvider already makes one branch away, and
+// for the same stated reason: "a caller who names one and cannot have it is
+// better served by an error it can see."
+//
+// # Why a missing pinner is not a refusal
+//
+// Without a pinner the chain has no registry and therefore no basis to call a
+// name unknown — exactly the reasoning [Chain.retired] already applies. A
+// Chain wired without one keeps its pre-existing score-ordered behaviour,
+// which is what every caller that has no naming registry (most tests, and any
+// embedder using the Chain standalone) depends on.
+// # Why a delegation sentinel is not a refusal
+//
+// The empty string was originally the only exemption here, on the grounds
+// that it means "the caller named nothing". `auto` means exactly that too —
+// it is the project's documented "you choose" value and the one its own
+// canonical first API call sends — so refusing it broke a documented client
+// flow while fixing an undocumented one. brain.IsDelegationSentinel is the
+// single definition of that set, shared with Router.Route so the two refusal
+// sites cannot drift into disagreeing about which requests name a model.
+func (c *Chain) refuseUnknownModel(requested string) error {
+	if brain.IsDelegationSentinel(requested) {
+		return nil
+	}
+	c.mu.RLock()
+	p := c.pinner
+	c.mu.RUnlock()
+	if p == nil {
+		return nil
+	}
+	return brain.NewModelNotFound(requested)
+}
+
 // retired asks the installed pinner whether a requested name is one this
 // deployment has permanently stopped publishing.
 //
@@ -273,6 +321,14 @@ func (c *Chain) Complete(ctx context.Context, req *types.InternalChatRequest) (*
 		return provider.Complete(ctx, &reqCopy)
 	}
 
+	// The pin missed. A caller that named a model this deployment does not
+	// serve is refused here, before the entry list below overrides req.Model
+	// with its own default and answers from a model the caller never asked
+	// for. See refuseUnknownModel.
+	if err := c.refuseUnknownModel(req.Model); err != nil {
+		return nil, err
+	}
+
 	c.mu.RLock()
 	numEntries := len(c.entries)
 	c.mu.RUnlock()
@@ -360,6 +416,13 @@ func (c *Chain) CompleteStream(ctx context.Context, req *types.InternalChatReque
 		reqCopy := deepCopyRequest(req)
 		reqCopy.Model = model
 		return provider.CompleteStream(ctx, &reqCopy)
+	}
+
+	// Same refusal as Complete, on its own call site: streaming is how a chat
+	// client actually talks, so a guard that covered only the buffered path
+	// would leave the misroute live for the common case.
+	if err := c.refuseUnknownModel(req.Model); err != nil {
+		return nil, err
 	}
 
 	c.mu.RLock()

@@ -108,19 +108,55 @@ func TestRouter_FallbackWhenPreferredUnavailable(t *testing.T) {
 	}
 }
 
+// TestRouter_FallbackToAnyAvailable pins step 6: with no fallback provider
+// name configured, the only available provider answers.
+//
+// # Reconciled for HXC-348 (§11.4.120)
+//
+// This case used to drive step 6 with the model name "unknown-model" and
+// assert that the request was answered anyway. That assertion WAS the
+// fail-open HXC-348 fixes: a caller naming a model no provider serves was
+// answered, at 200, by an unrelated one. The fix makes that an error, so this
+// case had to be reconciled rather than left red — and reconciled by
+// asserting the NEW mechanism, not by weakening the assertion.
+//
+// The behaviour it legitimately pinned — "no fallback name configured, so any
+// available provider answers" — is unchanged and still pinned here; it is
+// reached the way a caller with no preference actually reaches it, by naming
+// no model at all. The half that asserted the defect moved to
+// TestRouter_UnknownNamedModelIsRefused below, with its polarity flipped.
 func TestRouter_FallbackToAnyAvailable(t *testing.T) {
 	// No fallback name set; the only available provider should be chosen.
 	r := brain.NewRouter("")
 	r.Register("openai", newMock("openai", false, "gpt-4o"))
 	r.Register("anthropic", newMock("anthropic", true, "claude-sonnet-4-5"))
 
-	// Model has no matching prefix rule (no prefix match for "unknown-model").
-	p, err := r.Route(&types.InternalChatRequest{Model: "unknown-model"})
+	// No model named: the caller expressed no preference, which is the
+	// request this substitution exists to serve.
+	p, err := r.Route(&types.InternalChatRequest{})
 	if err != nil {
 		t.Fatalf("Route returned error: %v", err)
 	}
 	if p.Name() != "anthropic" {
 		t.Errorf("Route() provider = %q, want %q", p.Name(), "anthropic")
+	}
+}
+
+// TestRouter_UnknownNamedModelIsRefused is the other half of the case above:
+// the same router, the same providers, but a request that NAMES a model no
+// provider serves. It must be refused rather than answered by whichever
+// provider happens to be up.
+func TestRouter_UnknownNamedModelIsRefused(t *testing.T) {
+	r := brain.NewRouter("")
+	r.Register("openai", newMock("openai", false, "gpt-4o"))
+	r.Register("anthropic", newMock("anthropic", true, "claude-sonnet-4-5"))
+
+	p, err := r.Route(&types.InternalChatRequest{Model: "unknown-model"})
+	if err == nil {
+		t.Fatalf("Route() returned provider %q for a model no provider serves", p.Name())
+	}
+	if !brain.IsModelNotFound(err) {
+		t.Errorf("IsModelNotFound(%v) = false, want true", err)
 	}
 }
 
